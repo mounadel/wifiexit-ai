@@ -1,7 +1,7 @@
 "use client";
 
 import { EditAgentPage } from "ai-agent";
-import "ai-agent/dist/tailwind.css";
+// import "ai-agent/dist/tailwind.css";
 import { useCallback, useEffect, useRef } from "react";
 import axios from "axios";
 
