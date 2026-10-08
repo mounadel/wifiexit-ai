@@ -10,7 +10,12 @@ const DesignAgentStudio = dynamic(() => import('studio').then(mod => mod.DesignA
   loading: () => <div className="h-full w-full bg-black flex items-center justify-center text-white/20">Loading Design Studio...</div>
 });
 import axios from 'axios';
-import ApiKeyModal from './ApiKeyModal';
+import LoginScreen from './LoginScreen';
+import AccountModal from './AccountModal';
+import EffectsStudio from './EffectsStudio';
+import Logo from './Logo';
+import { BRAND } from '@/lib/brand';
+import { useAuth } from '@/lib/auth-client';
 import { getCommonCopy, getLocaleConfig, localizeStudioPath } from '@/lib/locales';
 
 // Tab/category ids, icons, and English `label` fallbacks are stable
@@ -19,6 +24,16 @@ import { getCommonCopy, getLocaleConfig, localizeStudioPath } from '@/lib/locale
 // inside the component below, with these English strings as the fallback
 // when a locale bundle is missing the key.
 const TABS = [
+  {
+    id: 'effects',
+    label: 'Effects',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"/>
+        <path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z"/>
+      </svg>
+    )
+  },
   {
     id: 'image',
     label: 'Image Studio',
@@ -207,11 +222,11 @@ const TABS = [
   }
 ];
 
-const NAVIGATION_CATEGORIES = [
+const ALL_NAVIGATION_CATEGORIES = [
   {
     id: 'images',
     label: 'Images',
-    tabIds: ['image', 'layers', 'cinema', 'design-agent', 'ai-influencer'],
+    tabIds: ['image', 'layers', 'cinema', 'ai-influencer'],
     icon: (
       <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <rect x="3" y="3" width="18" height="18" rx="2"/>
@@ -223,7 +238,7 @@ const NAVIGATION_CATEGORIES = [
   {
     id: 'video',
     label: 'Video',
-    tabIds: ['video', 'clipping', 'motion-control', 'vibe-motion', 'lipsync', 'body-swap', 'marketing'],
+    tabIds: ['effects', 'video', 'clipping', 'motion-control', 'vibe-motion', 'lipsync', 'body-swap', 'marketing'],
     icon: (
       <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <rect x="2" y="4" width="15" height="16" rx="2"/>
@@ -260,7 +275,11 @@ const NAVIGATION_CATEGORIES = [
   }
 ];
 
-const EXPLORE_APPS_TAB = TABS.find((tab) => tab.id === 'apps');
+// Fonctions désactivées (elles partagent les données du compte muapi entre tous les utilisateurs)
+const HIDDEN_CATEGORIES = new Set(['agents-automation']);
+const NAVIGATION_CATEGORIES = ALL_NAVIGATION_CATEGORIES.filter((c) => !HIDDEN_CATEGORIES.has(c.id));
+const HIDDEN_TABS = new Set(['workflows', 'agents', 'design-agent', 'apps']);
+const EXPLORE_APPS_TAB = null;
 
 const getNavigationCategory = (tabId) => (
   NAVIGATION_CATEGORIES.find((category) => category.tabIds.includes(tabId))
@@ -332,19 +351,18 @@ export default function StandaloneShell({ locale = 'en' }) {
 
   // Initialize activeTab from URL slug/params or default to 'image'
   const getInitialTab = () => {
-    if (idFromParams || slug.includes('workflow')) return 'workflows';
-    if (slug.includes('agents')) return 'agents';
-    if (slug.includes('design-agent')) return 'design-agent';
-    if (slug.includes('apps')) return 'apps';
     const firstSegment = slug[0];
-    if (firstSegment && TABS.find(t => t.id === firstSegment)) return firstSegment;
+    if (firstSegment && !HIDDEN_TABS.has(firstSegment) && TABS.find(t => t.id === firstSegment)) return firstSegment;
     return 'image';
   };
   
-  const [apiKey, setApiKey] = useState(null);
+  const auth = useAuth();
+  // Le "token" envoyé au serveur est la session de l'utilisateur ; la vraie clé muapi reste côté serveur.
+  const apiKey = auth.session?.access_token || null;
   const [activeTab, setActiveTab] = useState(getInitialTab());
 
   const [balance, setBalance] = useState(null);
+  const [quota, setQuota] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [isHeaderVisible, setIsHeaderVisible] = useState(true);
   const [hasMounted, setHasMounted] = useState(false);
@@ -451,6 +469,7 @@ export default function StandaloneShell({ locale = 'en' }) {
     try {
       const data = await getUserBalance(key);
       setBalance(data.balance);
+      setQuota(data);
     } catch (err) {
       console.error('Balance fetch failed:', err);
     }
@@ -464,7 +483,8 @@ export default function StandaloneShell({ locale = 'en' }) {
       label: tab?.label || tabId,
       resultUrl: data?.url || null,
     });
-  }, [pushNotification]);
+    if (apiKey) void fetchBalance(apiKey);
+  }, [pushNotification, apiKey, fetchBalance]);
 
   const makeErrorCallback = useCallback((tabId) => (errorOrMessage) => {
     const tab = TABS.find(t => t.id === tabId);
@@ -517,7 +537,7 @@ export default function StandaloneShell({ locale = 'en' }) {
       const localeAwarePath = rootPath && path.startsWith(rootPath) ? path.slice(rootPath.length) : path;
       const segments = localeAwarePath.split('/').filter(Boolean);
       const tabId = segments[1] || 'image';
-      if (TABS.find(t => t.id === tabId)) {
+      if (!HIDDEN_TABS.has(tabId) && TABS.find(t => t.id === tabId)) {
         setActiveTab(tabId);
       }
     };
@@ -576,28 +596,12 @@ export default function StandaloneShell({ locale = 'en' }) {
 
   useEffect(() => {
     setHasMounted(true);
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      setApiKey(stored);
-      fetchBalance(stored);
-      // Sync cookie immediately on mount to establish identity for background requests
-      document.cookie = `muapi_key=${stored}; path=/; max-age=31536000; SameSite=Lax`;
-    }
-  }, [fetchBalance]);
-
-  const handleKeySave = useCallback((key) => {
-    localStorage.setItem(STORAGE_KEY, key);
-    setApiKey(key);
-    fetchBalance(key);
-    document.cookie = `muapi_key=${key}; path=/; max-age=31536000; SameSite=Lax`;
-  }, [fetchBalance]);
-
-  const handleKeyChange = useCallback(() => {
-    localStorage.removeItem(STORAGE_KEY);
-    setApiKey(null);
-    setBalance(null);
-    document.cookie = "muapi_key=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
   }, []);
+
+  useEffect(() => {
+    if (apiKey) fetchBalance(apiKey);
+    else { setBalance(null); setQuota(null); }
+  }, [apiKey, fetchBalance]);
 
   // Inject API key into all outgoing Axios requests (prop-based approach)
   // We use an interceptor to be selective and NOT send the key to external domains like S3
@@ -675,8 +679,14 @@ export default function StandaloneShell({ locale = 'en' }) {
     </div>
   );
 
+  if (auth.loading) return (
+    <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+      <div className="animate-spin text-[#22d3ee] text-3xl">◌</div>
+    </div>
+  );
+
   if (!apiKey) {
-    return <ApiKeyModal onSave={handleKeySave} locale={locale} />;
+    return <LoginScreen auth={auth} />;
   }
 
   return (
@@ -705,7 +715,7 @@ export default function StandaloneShell({ locale = 'en' }) {
       )}
 
       {/* Vadoo promo banner */}
-      {showVadooBanner && (
+      {false && showVadooBanner && (
         <div className="flex-shrink-0 w-full bg-indigo-600 flex items-center justify-center px-4 py-2 gap-3 relative z-50">
           <a
             href="https://vadoo.tv"
@@ -775,13 +785,9 @@ export default function StandaloneShell({ locale = 'en' }) {
 
             {/* Logo & Title */}
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 bg-[#22d3ee] rounded-lg flex items-center justify-center shadow-lg shadow-[#22d3ee]/20">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="black" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-                </svg>
-              </div>
+              <Logo size={32} />
               <span className="text-sm font-bold tracking-tight hidden sm:block text-white">
-                {copy.shell.brand}
+                {BRAND.name}
               </span>
             </div>
           </div>
@@ -799,7 +805,7 @@ export default function StandaloneShell({ locale = 'en' }) {
             <div className="flex items-center gap-2.5 bg-white/5 px-3 py-1.5 rounded-full border border-white/5 transition-colors">
               <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
               <span className="text-xs font-bold text-white/90">
-                ${balance !== null ? `${balance}` : '---'}
+                {quota ? `⚡ ${quota.balance}/${quota.limit}` : '---'}
               </span>
             </div>
 
@@ -975,6 +981,9 @@ export default function StandaloneShell({ locale = 'en' }) {
 
         {/* Studio Content */}
         <div className="flex-1 min-h-0 h-full relative overflow-hidden bg-[#030303]">
+        <div className={activeTab === 'effects' ? "h-full w-full" : "hidden"}>
+          <EffectsStudio apiKey={apiKey} locale={locale} onGenerationStart={makeGenerationStartCallback('effects')} onGenerationEnd={makeGenerationEndCallback('effects')} onGenerationComplete={makeSuccessCallback('effects')} onGenerationError={makeErrorCallback('effects')} />
+        </div>
         <div className={activeTab === 'image' ? "h-full w-full" : "hidden"}>
           <ImageStudio apiKey={apiKey} locale={locale} droppedFiles={droppedFiles} onFilesHandled={handleFilesHandled} onGenerationStart={makeGenerationStartCallback('image')} onGenerationEnd={makeGenerationEndCallback('image')} onGenerationComplete={makeSuccessCallback('image')} onGenerationError={makeErrorCallback('image')} />
         </div>
@@ -1172,42 +1181,9 @@ export default function StandaloneShell({ locale = 'en' }) {
         }
       `}</style>
 
-      {/* Settings Modal */}
+      {/* Account Modal */}
       {showSettings && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in-up">
-          <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-8 w-full max-w-sm shadow-2xl">
-            <h2 className="text-white font-bold text-lg mb-2">{copy.settingsModal.title}</h2>
-            <p className="text-white/40 text-[13px] mb-8">
-              {copy.settingsModal.subtitle}
-            </p>
-
-            <div className="space-y-4 mb-8">
-              <div className="bg-white/5 border border-white/[0.03] rounded-md p-4">
-                <label className="block text-xs font-bold text-white/30 mb-2">
-                   {copy.settingsModal.activeApiKey}
-                </label>
-                <div className="text-[13px] font-mono text-white/80">
-                  {apiKey.slice(0, 8)}••••••••••••••••
-                </div>
-              </div>
-            </div>
-
-            <div className="flex gap-3">
-              <button
-                onClick={handleKeyChange}
-                className="flex-1 h-10 rounded-md bg-red-500/10 text-red-400 hover:bg-red-500/20 text-xs font-semibold transition-all"
-              >
-                {copy.settingsModal.changeKey}
-              </button>
-              <button
-                onClick={() => setShowSettings(false)}
-                className="flex-1 h-10 rounded-md bg-white/5 text-white/80 hover:bg-white/10 text-xs font-semibold transition-all border border-white/5"
-              >
-                {copy.settingsModal.close}
-              </button>
-            </div>
-          </div>
-        </div>
+        <AccountModal auth={auth} quota={quota} onClose={() => setShowSettings(false)} />
       )}
     </div>
   );
